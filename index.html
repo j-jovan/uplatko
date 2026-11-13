@@ -42,7 +42,8 @@ header li { font-size: 13px; padding: 3px 10px; border: 1px solid var(--line-sof
 .slip-head strong { color: var(--line); letter-spacing: .08em; text-transform: uppercase; font-size: 13px; }
 .drop { display: flex; gap: 12px; align-items: center; flex-wrap: wrap; border: 1.5px dashed var(--line-soft); border-radius: 4px; padding: 12px; }
 .drop.over { border-color: var(--line); }
-.drop img { max-height: 120px; max-width: 100%; border-radius: 3px; }
+.drop img { max-height: 120px; max-width: 100%; border-radius: 3px; cursor: zoom-in; }
+.drop img.zoom { max-height: none; width: 100%; cursor: zoom-out; }
 .paste { flex: 1 1 240px; min-width: 0; display: grid; gap: 6px; }
 #pastebox { border: 1.5px solid var(--line-soft); border-radius: 4px; padding: 8px; font-size: 14px; }
 #pastebox:focus { border-color: var(--line); }
@@ -2521,7 +2522,7 @@ function build() {
 
 function draw(text) {
   const qr = qrcode(0, "M"); qr.addData(text, "Byte"); qr.make();
-  paint($("qr"), qr, $("qrbox").clientWidth);
+  paint($("qr"), qr, Math.min($("qrbox").clientWidth, 340)); // capped on the page; "Preko celog ekrana" gives the big one
   if (!$("big").hidden) paint($("bigqr"), qr, Math.min(innerWidth, innerHeight) - 32);
   lastQr = qr;
 }
@@ -2572,7 +2573,13 @@ async function readPhoto(src) {
   if (!src || (isText ? !src.trim() : !src.type.startsWith("image/"))) return;
   if (!isText) { $("preview").src = URL.createObjectURL(src); $("preview").hidden = false; }
   const st = $("status");
-  if (!sample || (!isText && !canImg)) { st.className = "status err"; st.textContent = "Automatsko čitanje nije dostupno u ovom prikazu. Popuni polja ručno."; return; }
+  if (!sample || (!isText && !canImg)) {
+    st.className = "status err";
+    st.textContent = window.claude
+      ? "Automatsko čitanje nije dozvoljeno u ovom prikazu. Prepiši podatke sa slike u polja ispod."
+      : "Na ovom sajtu automatsko čitanje još ne radi (radi samo u Claude verziji). Prepiši podatke sa slike u polja ispod, QR se pravi sam.";
+    return;
+  }
   st.className = "status"; st.textContent = "Čitam uplatnicu…";
   try {
     const d = isText
@@ -2593,6 +2600,7 @@ async function readPhoto(src) {
       || "Čitanje nije uspelo. Probaj ponovo ili popuni ručno.";
   }
 }
+$("preview").addEventListener("click", () => $("preview").classList.toggle("zoom")); // enlarge to copy fields by hand
 $("photo").addEventListener("change", e => { readPhoto(e.target.files[0]); e.target.value = ""; });
 const drop = $("drop");
 drop.addEventListener("dragover", e => { e.preventDefault(); drop.classList.add("over"); });
