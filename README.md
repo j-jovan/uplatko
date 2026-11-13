@@ -12,7 +12,7 @@ Cela aplikacija je jedan fajl, `index.html`, bez build koraka i bez servera.
 
 ## Napomene
 
-- Automatsko čitanje slike i teksta radi samo kad se stranica otvori kao Claude artifact. Na običnom hostingu (Netlify, GitHub Pages) QR radi, a polja se popunjavaju ručno.
+- U Claude verziji sliku i tekst čita Claude (najtačnije). Na običnom hostingu (Netlify) radi besplatan OCR u browseru (Tesseract.js): račun, iznos, šifru, poziv na broj i svrhu uglavnom pročita, a primaoca i uplatioca često treba dopuniti ručno.
 - Proverava se kontrolni broj računa (mod 97) i poziva na broj kod modela 97.
 - Primalac i uplatilac smeju imati najviše 70 znakova (NBS pravilo); duži naziv blokira QR.
 - Podrazumevana šifra plaćanja je 289; gotovinske šifre 1xx se pri čitanju prebacuju u 2xx.

@@ -2567,32 +2567,103 @@ Za polje koje ne vidiš stavi prazan string. Ne izmišljaj podatke. Pazi da cifr
 "primalac" i "uplatilac" smeju imati NAJVIŠE 70 znakova ukupno (naziv + adresa, najviše 2 reda): koristi kratak naziv firme (npr. "Geko Plastics DOO" umesto "Društvo sa ograničenom odgovornošću Geko Plastics Beograd", "Jovan Jovanović PR TZR Zmaj" umesto punog naziva radnje) i kratku adresu (ulica i broj, mesto).
 Ako je ovo faktura ili predračun: primalac je izdavalac (prodavac), uplatilac je kupac; ako prodavac ima više računa uzmi prvi; iznos je ukupno za plaćanje sa PDV; ako nema poziva na broj, "poziv" i "model" ostavi prazne, a broj dokumenta stavi u svrhu, npr. "Predračun SO-VSRS-26006365" ili "Faktura 123/2026" (najviše 35 znakova).`;
 
+
+function fill(d) {
+  const set = (id, v) => { $(id).value = v == null ? "" : String(v); };
+  set("P", d.uplatilac); set("S", d.svrha); set("N", d.primalac);
+  let sf = String(d.sifra || "").replace(/\D/g, "");
+  sf = /^\d{3}$/.test(sf) ? (sf[0] === "1" ? "2" + sf.slice(1) : sf) : "289"; // no code on the document -> 289; cash 1xx -> non-cash 2xx
+  set("SF", sf);
+  set("I", d.iznos ? String(d.iznos).replace(".", ",") : ""); set("R", d.racun); set("M", d.model); set("RO", d.poziv);
+  build();
+}
+
+// Pure parser: OCR/pasted text of a Serbian slip or invoice -> fields. Shared by the page (copied in) and this test.
+function parseSlip(text, mod97ok, ref97ok) {
+  const t = text.replace(/\r/g, "");
+  const lines = t.split("\n").map(l => l.trim()).filter(Boolean);
+  const out = { uplatilac: "", svrha: "", primalac: "", sifra: "", iznos: "", racun: "", model: "", poziv: "" };
+
+  // Account: 3-13-2 digits (dashes or spaces), first one passing mod 97
+  for (const m of t.matchAll(/\b(\d{3})[\s-]{0,2}(\d{1,13})[\s-]{0,2}(\d{2})\b/g)) {
+    const d = m[1] + m[2].padStart(13, "0") + m[3];
+    if (m[2].length >= 3 && mod97ok(d)) { out.racun = `${m[1]}-${m[2]}-${m[3]}`; break; }
+  }
+
+  // Amount: number on a "total" line wins, else the largest money-looking number
+  const money = /(\d{1,3}(?:[.\s]\d{3})+|\d+)[.,](\d{2})(?!\d)/g;
+  const val = m => Number(m[1].replace(/[.\s]/g, "") + "." + m[2]);
+  let best = null;
+  for (const l of lines) if (/ukupno|za uplatu|za pla[cć]anje|iznos|total/i.test(l)) {
+    const ms = [...l.matchAll(money)]; if (ms.length) best = Math.max(best || 0, val(ms[ms.length - 1]));
+  }
+  if (best == null) for (const m of t.matchAll(money)) { const v = val(m); if (!(best >= v)) best = v; }
+  if (best) out.iznos = best.toFixed(2);
+
+  const sf = t.match(/[šs]ifra\s+pla[cć]anja\D{0,20}(\d{3})/i); if (sf) out.sifra = sf[1];
+
+  // Reference: explicit label, or a model-97 number that passes its check
+  const ro = t.match(/poziv\s+na\s+broj[^\n\d]{0,40}(?:(\d{2})\s+)?([0-9A-Z][0-9A-Z\/ -]{2,24})/i);
+  if (ro) { out.model = ro[1] || ""; out.poziv = ro[2].trim(); }
+  if (!out.poziv) for (const m of t.matchAll(/\b97[\s-]?(\d[\d\s-]{4,22}\d)/g)) {
+    const r = m[1].replace(/\D/g, ""); if (ref97ok(r)) { out.model = "97"; out.poziv = r; break; }
+  }
+
+  const sv = t.match(/svrha\s+(?:uplate|pla[cć]anja)[:\s]*([^\n]+)/i);
+  const doc = t.match(/(predra[čc]un|faktura|ra[čc]un)\s*(?:br\.?|broj|no\.?|№|nr\.?)?\s*[:#]?\s*\n?\s*(?:№\s*)?([A-Z]{1,6}[-\/][A-Z0-9\/-]{3,}|\d[\d\/-]{3,})/i);
+  if (sv && sv[1].trim().length > 2) out.svrha = sv[1].trim();
+  else if (doc) out.svrha = (doc[1][0].toUpperCase() + doc[1].slice(1).toLowerCase()) + " " + doc[2];
+
+  // Names: line(s) after the slip labels; invoices fall back to empty (filled by hand)
+  const after = re => { const i = lines.findIndex(l => re.test(l)); if (i < 0) return "";
+    const label = /^(uplatilac|primalac|svrha|[šs]ifra|ra[čc]un|model|iznos|valuta|potpis|mesto|datum)\b/i;
+    const rest = lines[i].replace(re, "").replace(/^[:\s]+/, "");
+    const next = lines.slice(i + 1, i + 3); const cut = next.findIndex(l => label.test(l));
+    return [rest, ...(cut < 0 ? next : next.slice(0, cut))].filter(Boolean).slice(0, 2).join("\n"); };
+  const short = s => s.replace(/dru[šs]tvo\s+sa\s+ograni[čc]enom\s+odgovorno[šs][ćc]u/ig, "DOO").replace(/akcionarsko\s+dru[šs]tvo/ig, "AD").replace(/\s+/g, " ");
+  out.uplatilac = after(/^uplatilac\b/i).split("\n").map(short).join("\n");
+  out.primalac = after(/^primalac\b/i).split("\n").map(short).join("\n");
+  return out;
+}
+
+// Without Claude (e.g. on Netlify): free OCR in the browser, then the regex parser above
+let ocrWorker = null;
+async function localRead(src) {
+  const st = $("status"); st.className = "status";
+  try {
+    let text = src;
+    if (typeof src !== "string") {
+      st.textContent = "Učitavam čitač teksta (prvi put traje duže)…";
+      if (!window.Tesseract) await new Promise((ok, no) => { const s = document.createElement("script");
+        s.src = "https://cdn.jsdelivr.net/npm/tesseract.js@5.1.1/dist/tesseract.min.js"; s.onload = ok; s.onerror = no; document.head.append(s); });
+      ocrWorker ??= await Tesseract.createWorker("srp_latn", 1, { logger: m => {
+        if (m.status === "recognizing text") st.textContent = `Čitam sliku… ${Math.round(m.progress * 100)}%`; } });
+      text = (await ocrWorker.recognize(src)).data.text;
+    }
+    const d = parseSlip(text, mod97ok, ref97ok);
+    fill(d);
+    const missing = [!d.primalac && "primaoca", !d.uplatilac && "uplatioca", !d.racun && "račun", !d.iznos && "iznos"].filter(Boolean);
+    st.textContent = "Osnovno čitanje (bez Claude-a) je završeno. Proveri sva polja" + (missing.length ? "; dopuni: " + missing.join(", ") + "." : ".");
+  } catch (e) {
+    st.className = "status err";
+    st.textContent = "Čitanje nije uspelo. Prepiši podatke sa slike u polja ispod (klik na sliku je uvećava).";
+  }
+}
+
 // Accepts an image File or pasted text
 async function readPhoto(src) {
   const isText = typeof src === "string";
   if (!src || (isText ? !src.trim() : !src.type.startsWith("image/"))) return;
   if (!isText) { $("preview").src = URL.createObjectURL(src); $("preview").hidden = false; }
   const st = $("status");
-  if (!sample || (!isText && !canImg)) {
-    st.className = "status err";
-    st.textContent = window.claude
-      ? "Automatsko čitanje nije dozvoljeno u ovom prikazu. Prepiši podatke sa slike u polja ispod."
-      : "Na ovom sajtu automatsko čitanje još ne radi (radi samo u Claude verziji). Prepiši podatke sa slike u polja ispod, QR se pravi sam.";
-    return;
-  }
+  if (!sample || (!isText && !canImg)) return localRead(src);
   st.className = "status"; st.textContent = "Čitam uplatnicu…";
   try {
     const d = isText
       ? await sample.json(PROMPT.replace("Ovo je fotografija", "Ispod je tekst") + "\n\nTekst:\n" + src.slice(0, 8000))
       : await sample.json(PROMPT, { images: [src] });
-    const set = (id, v) => { $(id).value = v == null ? "" : String(v); };
-    set("P", d.uplatilac); set("S", d.svrha); set("N", d.primalac);
-    let sf = String(d.sifra || "").replace(/\D/g, "");
-    sf = /^\d{3}$/.test(sf) ? (sf[0] === "1" ? "2" + sf.slice(1) : sf) : "289"; // no code on the document -> 289; cash 1xx -> non-cash 2xx
-    set("SF", sf);
-    set("I", d.iznos ? String(d.iznos).replace(".", ",") : ""); set("R", d.racun); set("M", d.model); set("RO", d.poziv);
+    fill(d);
     st.textContent = "Pročitano. Proveri polja pre plaćanja, naročito račun, iznos i poziv na broj.";
-    build();
   } catch (e) {
     st.className = "status err";
     st.textContent = ({ not_granted: "Čitanje slike nije dozvoljeno. Popuni polja ručno.", rate_limited: "Previše zahteva. Pokušaj ponovo za koji minut.",
